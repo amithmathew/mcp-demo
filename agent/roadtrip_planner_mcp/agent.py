@@ -24,7 +24,7 @@ roadtrip_planner = LlmAgent(
         "Plan your next roadtrip!"
     ),
     instruction=prompt.ROADTRIP_PLANNER_ROOT,
-    tools=[mcp_tools, google_search]
+    tools=[mcp_tools]
 )
 
 root_agent = roadtrip_planner
