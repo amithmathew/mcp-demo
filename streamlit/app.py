@@ -22,11 +22,16 @@ load_dotenv()
 # ADK Agent
 MODEL = "gemini-2.5-pro"
 
-mcp_tools = MCPToolset(
-    connection_params=StreamableHTTPConnectionParams(
-        url="http://127.0.0.1:8080/mcp",
+@st.cache_resource
+def get_mcp_tools():
+    return MCPToolset(
+        connection_params=StreamableHTTPConnectionParams(
+            url="http://127.0.0.1:8080/mcp",
+        )
     )
-)
+
+
+mcp_tools = get_mcp_tools()
 
 search_agent = Agent(
     model=MODEL,
@@ -34,6 +39,18 @@ search_agent = Agent(
     instruction="You are a specialist in Google Search",
     tools=[google_search]
 )
+
+
+# callback to capture map data
+def after_tool_callback(tool, args, tool_response, tool_context):
+    """Callback that will run after any tool executes"""
+    print(f"====== Tool call {tool} is completed. callback.")
+    if isinstance(tool_response, dict):
+        if 'encoded_polyline' in tool_response and 'ordered_waypoints' in tool_response:
+            # Store in adk session state (thread-safe)
+            tool_context.state['map_data'] = tool_response
+            print("Map data updated.")
+    return None
 
 # Display Map tool
 def display_map(encoded_polyline: str, waypoints: list[dict]) -> str:
@@ -61,7 +78,8 @@ roadtrip_planner = Agent(
         "Plan your next roadtrip!"
     ),
     instruction=prompt.ROADTRIP_PLANNER_ROOT,
-    tools=[mcp_tools, AgentTool(search_agent), display_map]
+    tools=[mcp_tools, AgentTool(search_agent)],
+    after_tool_callback=after_tool_callback
 )
 
 
@@ -125,12 +143,14 @@ with col1:
     if prompt_input := st.chat_input("Where do you want to go?"):
         # Add user message to state and display it
         st.session_state.messages.append({"role": "user", "content": prompt_input})
-        with st.chat_message("user"):
-            st.markdown(prompt_input)
+        #with st.chat_message("user"):
+        #    st.markdown(prompt_input)
 
         # Get assistant response
         with st.chat_message("assistant"):
             with st.spinner("Your assistant is thinking... (this may take a moment)"):
+                status_placeholder = st.empty()
+
                 # Async wrapper to get response
                 async def get_agent_response():
                     response_text = None
@@ -139,14 +159,38 @@ with col1:
                                                         session_id = st.session_state.adk_session_id,
                                                         new_message=user_content # ADK handles it's own history
                         ):
+                        print(f"========== EVENT: {event}")
+                        if hasattr(event, 'content') and event.content:
+                            for part in event.content.parts:
+                                if hasattr(part, 'function_call') and part.function_call is not None:
+                                    tool_name = part.function_call.name
+                                    status_placeholder.info(f"🔧 Calling tool: {tool_name}")
+                                if hasattr(part, 'function_response') and part.function_response is not None:
+                                    status_placeholder.success(f"✅ Tool call completed!")
+                                    print(f"=========== content: {part.function_response}")
+                                
                         if event.is_final_response():
                             response_text = event.content.parts[0].text
+                            status_placeholder.empty()
                     return response_text
                 
                 response = asyncio.run(get_agent_response())
+
+                # Get map data from ADK session state if it exists
+                async def get_session():
+                    session = await session_service.get_session(
+                        app_name = "Roadtrip Planner",
+                        user_id = st.session_state.user_id,
+                        session_id = st.session_state.adk_session_id
+                    )
+                    return session
+                session = asyncio.run(get_session())
+
+                if 'map_data' in session.state:
+                    st.session_state.map_data = session.state['map_data']
                 
                 st.session_state.messages.append({"role": "assistant", "content": response})
-                st.markdown(response)
+                #st.markdown(response)
 
         # Force a rerun to update map
         st.rerun()

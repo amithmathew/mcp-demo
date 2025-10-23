@@ -1,14 +1,20 @@
 from fastmcp import FastMCP
 from dotenv import load_dotenv
-import os
-from google.maps.routing_v2 import RoutesClient
-from google.maps.routing_v2.types import ComputeRoutesRequest, Waypoint, RouteModifiers, RouteTravelMode
 from typing import List
 import json
+from typing import List
+from google.maps.routing_v2 import RoutesClient
+from google.maps.routing_v2.types import (
+    ComputeRoutesRequest,
+    RouteModifiers,
+    RouteTravelMode,
+    Waypoint,
+    Location, # <-- Make sure Location is imported
+)
 
 load_dotenv()
 
-mcp = FastMCP("Google Maps MCP Server PLUS++")
+mcp = FastMCP("Google Maps MCP Server")
 client = RoutesClient()
 
 @mcp.tool
@@ -36,7 +42,7 @@ def get_directions(from_address: str,
         travel_mode: "DRIVE", "BICYCLE", "WALK", "TWO_WHEELER". Defaults to "DRIVE".
 
     Returns:
-        A JSON string containing route information. Includes:
+        A pyton dict containing route information. Includes:
         - 'duration_text': Human-readable total duration.
         - 'distance_text': Human-readable total distance.
         - 'encoded_polyline': An encoded polyline string for plotting the route on a map.
@@ -48,10 +54,11 @@ def get_directions(from_address: str,
           - 'details': A placeholder for details.
     """
     
-    # ***IMPORTANT: Updated field mask to get all data we need***
     field_mask = (
-        "routes.duration,routes.distanceMeters,routes.description,routes.polyline.encoded_polyline,"
-        "routes.origin,routes.destination,routes.intermediates,routes.optimized_intermediate_waypoint_index"
+        "routes.duration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline,"
+        "routes.optimizedIntermediateWaypointIndex,"
+        "routes.legs.startLocation.latLng,"
+        "routes.legs.endLocation.latLng"
     )
 
     intermediates_wps = [Waypoint(address=landmark) for landmark in landmarks_to_visit]
@@ -66,7 +73,8 @@ def get_directions(from_address: str,
         origin=Waypoint(address=from_address),
         destination=Waypoint(address=to_address),
         intermediates=intermediates_wps,
-        optimize_waypoint_order=True,
+        # Only optimize if there are waypoints to optimize
+        optimize_waypoint_order=True if intermediates_wps else False,
         route_modifiers=RouteModifiers(
             avoid_tolls=avoid_tolls,
             avoid_ferries=avoid_ferries,
@@ -86,38 +94,54 @@ def get_directions(from_address: str,
     if not response.routes:
         return json.dumps({"error": "No route found. Addresses may not have been valid. Please be more specific."})
 
+    print(response) # Good for debugging!
+
     route = response.routes[0]
     
     ordered_waypoints = []
 
     # 1. Add Origin
+    # The origin of the *route* is the startLocation of the *first leg*.
     ordered_waypoints.append({
         "address": from_address,
-        "lat": route.origin.location.lat_lng.latitude,
-        "lng": route.origin.location.lat_lng.longitude,
+        "lat": route.legs[0].start_location.lat_lng.latitude,
+        "lng": route.legs[0].start_location.lat_lng.longitude,
         "details": "Starting Point"
     })
 
     # 2. Add Optimized Intermediates
     if route.optimized_intermediate_waypoint_index:
-        # The 'route.intermediates' list is ALREADY in the optimized order
-        for i, optimized_wp in enumerate(route.intermediates):
-            # Find the original address string using the index map
-            original_index = route.optimized_intermediate_waypoint_index[i]
+        # Iterate over the optimized index list to get the correct *original* address
+        for i, original_index in enumerate(route.optimized_intermediate_waypoint_index):
             original_address = landmarks_to_visit[original_index]
+            
+            # The location data is the *end* of the corresponding leg.
+            # Stop 1 (i=0) is the end of leg 0.
+            leg_for_this_stop = route.legs[i]
             
             ordered_waypoints.append({
                 "address": original_address,
-                "lat": optimized_wp.location.lat_lng.latitude,
-                "lng": optimized_wp.location.lat_lng.longitude,
-                "details": f"Stop {i+1}: {original_address}" # Placeholder
+                "lat": leg_for_this_stop.end_location.lat_lng.latitude,
+                "lng": leg_for_this_stop.end_location.lat_lng.longitude,
+                "details": f"Stop {i+1}: {original_address}"
+            })
+    elif landmarks_to_visit:
+        # No optimization, but intermediates exist. Add them in the order given.
+        for i, address in enumerate(landmarks_to_visit):
+            leg_for_this_stop = route.legs[i]
+            ordered_waypoints.append({
+                "address": address,
+                "lat": leg_for_this_stop.end_location.lat_lng.latitude,
+                "lng": leg_for_this_stop.end_location.lat_lng.longitude,
+                "details": f"Stop {i+1}: {address}"
             })
 
     # 3. Add Destination
+    # The destination of the *route* is the endLocation of the *last leg*.
     ordered_waypoints.append({
         "address": to_address,
-        "lat": route.destination.location.lat_lng.latitude,
-        "lng": route.destination.location.lat_lng.longitude,
+        "lat": route.legs[-1].end_location.lat_lng.latitude,
+        "lng": route.legs[-1].end_location.lat_lng.longitude,
         "details": "Destination"
     })
 
@@ -127,20 +151,20 @@ def get_directions(from_address: str,
     minutes = (duration_seconds % 3600) // 60
     duration_text = f"{hours} hr {minutes} min"
 
-    # Convert distance (meters) to miles or km (using miles here)
-    distance_miles = round(route.distance_meters / 1000, 1)
-    distance_text = f"{distance_miles} km"
+    # Convert distance (meters) to km
+    distance_km = round(route.distance_meters / 1000, 1)
+    distance_text = f"{distance_km} km"
 
     result = {
         "description": route.description,
         "duration_text": duration_text,
         "distance_text": distance_text,
-        "encoded_polyline": route.polyline.encoded_polyline,
+        "encoded_polyline": route.polyline.encoded_polyline, 
         "ordered_waypoints": ordered_waypoints,
     }
     
-    # Return as a JSON string
-    return json.dumps(result)
+    # Return as a JSON string to match your docstring
+    return result
 
 
 @mcp.prompt
