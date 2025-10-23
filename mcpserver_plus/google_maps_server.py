@@ -93,7 +93,7 @@ def get_directions(from_address: str,
     if not response.routes:
         return json.dumps({"error": "No route found. Addresses may not have been valid. Please be more specific."})
 
-    print(response) # Good for debugging!
+    print(response)
 
     route = response.routes[0]
     
@@ -167,8 +167,8 @@ def get_directions(from_address: str,
 
 
 @mcp.prompt
-def get_route(origin, destination, waypoints_list):
-    """Generates a user messaging asking for start, destination and stops along the way to plan a route"""
+def get_route(origin: str, destination: str, waypoints_list: List):
+    """Generates a prompt that demonstrates how to ask for a route given start, destination and stops along the way"""
     return f"I am starting from {origin} and want to go to {destination} while stopping at {', '.join(waypoints_list)} along the way."
 
 
